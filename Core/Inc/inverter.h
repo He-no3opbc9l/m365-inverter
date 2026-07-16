@@ -18,11 +18,11 @@
 #define INV_PWM_HZ        15779u    /* control-ISR rate = 64MHz/(2*_T)           */
 #define INV_OUT_HZ        50u       /* target output frequency                    */
 #define INV_PHASE_STEP    ((uint32_t)(((uint64_t)INV_OUT_HZ << 32) / INV_PWM_HZ))
-#define INV_RAMP_MASK     0x7Fu     /* initial soft-start: +1 every 128 ISR ticks (~2.8s)
-                                     * so transformer flux builds gradually at power-on. */
-#define INV_RECOVER_MASK  0x0Fu     /* AFTER soft-start: +1 every 16 ticks (~0.35s) so the
-                                     * output recovers quickly once a load-induced fold-back
-                                     * clears (otherwise a transient collapses it for seconds). */
+/* Amplitude slew = +1 step every N ISR ticks (ISR ~15779 Hz, full amp ~350).
+ * Initial soft-start is slow so the transformer flux and any capacitive/SMPS load
+ * charge gradually; after it first reaches target, recovery from a fold-back is fast. */
+#define INV_RAMP_DIV      225u      /* ~5 s to full amplitude (soft-start)        */
+#define INV_RECOVER_DIV   8u        /* ~0.18 s recovery back to target after a limit */
 
 /* ---- Output amplitude ----
  * INV_REGULATE 0 : fixed open-loop amplitude INV_AMP_SET (robust, predictable).
@@ -42,10 +42,18 @@
 
 /* ---- Protection ---- */
 #define INV_CAL_I         38        /* mA per phase-current ADC count (CAL_I)     */
-/* Hard short-circuit latch: debounced + blanked at start-up. There is no soft
- * current-limit fold-back (it collapsed the output into normal loads); the bench
- * supply's own current limit handles overload, this only trips on a real short. */
-#define INV_OC_TRIP_A     25        /* short-circuit latch, amps (phase)          */
+/* Two-level current protection:
+ *  - soft current LIMIT (fold-back): hold phase current <= ILIM by pulling the
+ *    amplitude down, then recover fast. Lets the output soft-start into capacitive
+ *    / SMPS loads (their inrush is limited instead of tripping);
+ *  - hard short-circuit LATCH at a much higher level (real short only). */
+#define INV_ILIM_A        20        /* soft current-limit, amps                    */
+#define INV_ILIM_CNT      ((INV_ILIM_A * 1000) / INV_CAL_I)
+#define INV_ILIM_SHIFT    2         /* proportional gain: amp -= (over >> SHIFT)+1.
+                                     * Reduces amplitude in proportion to the overshoot
+                                     * so it SETTLES at the current limit instead of
+                                     * collapsing to zero -> holds voltage, recovers. */
+#define INV_OC_TRIP_A     40        /* hard short-circuit latch, amps             */
 #define INV_OC_TRIP_CNT   ((INV_OC_TRIP_A * 1000) / INV_CAL_I)
 #define INV_OC_DEBOUNCE   4         /* consecutive over-trip samples to latch     */
 #define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles     */

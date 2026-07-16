@@ -161,7 +161,11 @@ static void adc1_init(void)
     hadc1.Init.NbrOfDiscConversion = 0;
     if (HAL_ADC_Init(&hadc1) != HAL_OK) err();
 
-    mm.Mode = ADC_DUALMODE_INJECSIMULT;            /* ADC1+ADC2 injected fire together */
+    /* Independent mode: ADC1 does 3 injected conversions (phaseA, Vbat, temp) and
+     * ADC2 does 1 (phaseB); both are triggered by T1_CC4 so phaseA/phaseB still
+     * sample together. Dual-SIMULT needs equal conversion counts on both ADCs -
+     * the asymmetry corrupted the current readings. */
+    mm.Mode = ADC_MODE_INDEPENDENT;
     if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &mm) != HAL_OK) err();
 
     /* Injected group, triggered by TIM1_CC4: rank1 phase-A current, rank2 Vbat,
@@ -199,7 +203,7 @@ static void adc2_init(void)
     inj.InjectedRank = ADC_INJECTED_RANK_1;
     inj.InjectedNbrOfConversion = 1;
     inj.InjectedSamplingTime = ADC_SAMPLETIME_1CYCLE_5;
-    inj.ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START; /* slaved via dual mode */
+    inj.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4; /* same trigger as ADC1 */
     inj.AutoInjectedConv = DISABLE;
     inj.InjectedDiscontinuousConvMode = DISABLE;
     inj.InjectedOffset = 0;

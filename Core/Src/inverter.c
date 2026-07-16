@@ -12,6 +12,7 @@ static uint16_t         oc_cnt;        /* consecutive over-current samples      
 static uint32_t         oc_blank;      /* startup over-current blanking countdown    */
 static volatile int32_t ipeak;         /* peak |phase current| (telemetry)           */
 static uint8_t          started;       /* set once soft-start reaches target         */
+volatile int32_t        oc_trip_i;     /* current (counts) that latched the OC (diag) */
 
 void inverter_init(void)
 {
@@ -39,16 +40,21 @@ void inverter_fast(int16_t iph1, int16_t iph2)
     /* --- fast overcurrent / short-circuit trip (debounced + startup-blanked) --- */
     int32_t ia = (iph1 < 0) ? -iph1 : iph1;
     int32_t ib = (iph2 < 0) ? -iph2 : iph2;
-    int32_t imax = (ia > ib) ? ia : ib;
-    if (imax > ipeak) ipeak = imax;                /* peak-hold for telemetry */
+    /* the H-bridge current flows in series through both shunts (A = -B), so the
+     * MIN of |A| and |B| is the real current and rejects a spurious spike that
+     * only shows on one channel (ADC glitch at the sample instant). */
+    int32_t icur = (ia < ib) ? ia : ib;
+    if (icur > ipeak) ipeak = icur;                /* peak-hold for telemetry */
     if (oc_blank) oc_blank--;
 
     /* hard short-circuit latch (debounced, blanked at startup). No soft current-
      * limit fold-back: it collapsed the output into loads; the bench supply's own
      * current limit handles overload, this only catches a genuine short. */
-    if (!oc_blank && imax > INV_OC_TRIP_CNT) {
-        if (++oc_cnt >= INV_OC_DEBOUNCE)
+    if (!oc_blank && icur > INV_OC_TRIP_CNT) {
+        if (++oc_cnt >= INV_OC_DEBOUNCE) {
             fault = INV_FAULT_OC;
+            oc_trip_i = icur;                      /* capture the tripping current */
+        }
     } else {
         oc_cnt = 0;
     }
@@ -64,13 +70,22 @@ void inverter_fast(int16_t iph1, int16_t iph2)
     SET_BIT(TIM1->BDTR, TIM_BDTR_MOE);             /* keep output enabled */
 
     /* slew amplitude toward target: slow soft-start on power-up, fast recovery after */
-    int32_t  tgt  = thermal_hold ? 0 : amp_target;
-    uint16_t mask = started ? INV_RECOVER_MASK : INV_RAMP_MASK;
-    if ((++rtick & mask) == 0) {
+    int32_t  tgt = thermal_hold ? 0 : amp_target;
+    uint16_t div = started ? INV_RECOVER_DIV : INV_RAMP_DIV;
+    if (++rtick >= div) {
+        rtick = 0;
         if (amp < tgt)      amp++;
         else if (amp > tgt) amp--;
     }
     if (tgt > 0 && amp >= tgt) started = 1;
+
+    /* proportional current limit: pull amplitude down in proportion to how far the
+     * current is over ILIM. It settles at the limit (holding voltage) instead of
+     * collapsing to zero, and the slew above brings it back when the load eases. */
+    if (!oc_blank && icur > INV_ILIM_CNT) {
+        amp -= ((icur - INV_ILIM_CNT) >> INV_ILIM_SHIFT) + 1;
+        if (amp < 0) amp = 0;
+    }
 
     /* DDS sine. arm_sin_q31 wants input in [0 .. 0x7FFFFFFF] = [0 .. 2*pi);
      * (theta >> 1) keeps it positive across the whole accumulator -> one clean
