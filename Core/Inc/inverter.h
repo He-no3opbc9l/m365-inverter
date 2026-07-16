@@ -18,22 +18,34 @@
 #define INV_PWM_HZ        15779u    /* control-ISR rate = 64MHz/(2*_T)           */
 #define INV_OUT_HZ        50u       /* target output frequency                    */
 #define INV_PHASE_STEP    ((uint32_t)(((uint64_t)INV_OUT_HZ << 32) / INV_PWM_HZ))
-#define INV_RAMP_MASK     0x0Fu     /* amplitude slews +/-1 every 16 ISR ticks    */
+#define INV_RAMP_MASK     0x7Fu     /* amplitude slews +/-1 every 128 ISR ticks:
+                                     * ~2.8 s to full amplitude. A slow voltage ramp
+                                     * lets the transformer flux build gradually and
+                                     * avoids the magnetizing inrush surge that trips
+                                     * the supply / over-current at start-up. */
 
-/* ---- Closed-loop output regulation (feed-forward from supply voltage) ----
- * Holds the secondary RMS at INV_VOUT_TARGET regardless of supply voltage.
- * Calibration point measured on the bench: amp INV_CAL_AMP produced INV_CAL_VOUT
- * volts RMS at supply INV_CAL_VBAT_MV. Output is linear in amp. */
-#define INV_VOUT_TARGET   230       /* desired secondary RMS, volts               */
-#define INV_CAL_AMP       150       /* calibration: this amplitude ...            */
-#define INV_CAL_VOUT      94        /* ... gave this secondary RMS ...            */
-#define INV_CAL_VBAT_MV   32000     /* ... at this supply voltage (mV)            */
-#define INV_AMP_MAX       420       /* hard amplitude ceiling (safety, ~260V)     */
+/* ---- Output amplitude ----
+ * INV_REGULATE 0 : fixed open-loop amplitude INV_AMP_SET (robust, predictable).
+ * INV_REGULATE 1 : feed-forward regulation from supply voltage — needs a
+ *                  RELIABLE Vbat reading; the M365 regular-ADC scan is disturbed
+ *                  by the 15.8 kHz injected conversions under load, so this is
+ *                  OFF by default (bad Vbat -> amp runs to the ceiling -> overshoot).
+ * Calibrate INV_AMP_SET on the bench: raise until the secondary reads the wanted
+ * RMS. Reference: ~amp 358 gave ~230 V at ~30 V supply with the test transformer. */
+#define INV_REGULATE      0
+#define INV_AMP_SET       350       /* fixed amplitude (open-loop) — TUNE for your Vout */
+#define INV_VOUT_TARGET   230       /* regulation target (only if INV_REGULATE 1)  */
+#define INV_CAL_AMP       150       /* regulation calibration point ...            */
+#define INV_CAL_VOUT      94        /* ... gave this secondary RMS ...             */
+#define INV_CAL_VBAT_MV   32000     /* ... at this supply voltage (mV)             */
+#define INV_AMP_MAX       420       /* hard amplitude ceiling (safety)             */
 
 /* ---- Protection ---- */
 #define INV_CAL_I         38        /* mA per phase-current ADC count (CAL_I)     */
-#define INV_OC_TRIP_A     10        /* overcurrent / short-circuit trip, amps     */
+#define INV_OC_TRIP_A     15        /* overcurrent / short-circuit trip, amps     */
 #define INV_OC_TRIP_CNT   ((INV_OC_TRIP_A * 1000) / INV_CAL_I)
+#define INV_OC_DEBOUNCE   4         /* consecutive over-threshold samples to latch (reject noise/inrush spikes) */
+#define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles, skips transformer magnetizing inrush */
 /* Thermal fold-back. Disabled by default: the M365 temperature reading is
  * board-specific and the (counts*41)>>8 scaling is uncalibrated, so a stray/
  * unconnected sensor reads as a bogus high temperature and would wrongly hold
@@ -50,6 +62,7 @@ void    inverter_init(void);                            /* once, after periphera
 void    inverter_fast(int16_t iph1, int16_t iph2);      /* every PWM ISR                */
 void    inverter_slow(int32_t vbat_mV, int16_t temp_c); /* ~10 ms: regulation + thermal */
 uint8_t inverter_fault(void);
-int32_t inverter_amp(void);    /* current soft-started amplitude (telemetry) */
+int32_t inverter_amp(void);    /* current soft-started amplitude (telemetry)    */
+int32_t inverter_ipeak(void);  /* peak |phase current| since last call, counts  */
 
 #endif /* INVERTER_H */

@@ -8,6 +8,9 @@ static volatile int32_t amp_target;    /* amplitude wanted by the slow loop     
 static uint16_t         rtick;         /* slew prescaler                             */
 static volatile uint8_t fault;         /* INV_FAULT_* (latched)                      */
 static volatile uint8_t thermal_hold;  /* non-latching thermal fold-back             */
+static uint16_t         oc_cnt;        /* consecutive over-current samples           */
+static uint32_t         oc_blank;      /* startup over-current blanking countdown    */
+static volatile int32_t ipeak;         /* peak |phase current| (telemetry)           */
 
 void inverter_init(void)
 {
@@ -17,22 +20,34 @@ void inverter_init(void)
     rtick = 0;
     fault = INV_FAULT_NONE;
     thermal_hold = 0;
+    oc_cnt = 0;
+    oc_blank = INV_OC_BLANK;
+    ipeak = 0;
     SET_BIT(TIM1->BDTR, TIM_BDTR_MOE);   /* enable the output stage */
 }
 
 uint8_t inverter_fault(void) { return fault; }
 int32_t inverter_amp(void)   { return amp; }
+int32_t inverter_ipeak(void) { int32_t p = ipeak; ipeak = 0; return p; }  /* read-and-clear */
 
 /* Called every PWM period from the ADC injected-conversion ISR. iph1/iph2 are the
  * zero-centred phase-A/phase-B shunt currents (ADC counts). Writes TIM1->CCR1..3. */
 void inverter_fast(int16_t iph1, int16_t iph2)
 {
-    /* --- fast overcurrent / short-circuit trip (latched) --- */
+    /* --- fast overcurrent / short-circuit trip (debounced + startup-blanked) --- */
     int32_t ia = (iph1 < 0) ? -iph1 : iph1;
     int32_t ib = (iph2 < 0) ? -iph2 : iph2;
     int32_t imax = (ia > ib) ? ia : ib;
-    if (imax > INV_OC_TRIP_CNT)
-        fault = INV_FAULT_OC;
+    if (imax > ipeak) ipeak = imax;                /* peak-hold for telemetry */
+
+    if (oc_blank) {
+        oc_blank--;                                /* ignore inrush for the first ~100 ms */
+    } else if (imax > INV_OC_TRIP_CNT) {
+        if (++oc_cnt >= INV_OC_DEBOUNCE)           /* only latch on sustained over-current */
+            fault = INV_FAULT_OC;
+    } else {
+        oc_cnt = 0;
+    }
 
     if (fault) {                                   /* latched: kill the output */
         CLEAR_BIT(TIM1->BDTR, TIM_BDTR_MOE);
@@ -75,14 +90,18 @@ void inverter_slow(int32_t vbat_mV, int16_t temp_c)
 #endif
 
     if (fault) return;                             /* OC latched: stay off */
-    if (vbat_mV < 1000) { amp_target = 0; return; } /* implausible reading  */
 
+#if INV_REGULATE
     /* feed-forward regulation: amp needed to hold INV_VOUT_TARGET at this supply.
-     * Vout = k * amp * Vbat  ->  amp = Vout_target * cal_amp * cal_vbat
-     *                                   / (cal_vout * Vbat). */
+     * Requires a reliable Vbat reading (see INV_REGULATE note in inverter.h). */
+    if (vbat_mV < 1000) { amp_target = 0; return; }
     int64_t num = (int64_t)INV_VOUT_TARGET * INV_CAL_AMP * INV_CAL_VBAT_MV;
     int32_t t   = (int32_t)(num / ((int64_t)INV_CAL_VOUT * vbat_mV));
     if (t > INV_AMP_MAX) t = INV_AMP_MAX;
     if (t < 0)           t = 0;
     amp_target = t;
+#else
+    (void)vbat_mV;
+    amp_target = (INV_AMP_SET > INV_AMP_MAX) ? INV_AMP_MAX : INV_AMP_SET;
+#endif
 }

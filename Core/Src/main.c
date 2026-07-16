@@ -65,9 +65,11 @@ int main(void)
             int32_t amp  = inverter_amp();
             int32_t vout = (int32_t)(((int64_t)INV_CAL_VOUT * amp * vbat)
                                      / ((int64_t)INV_CAL_AMP * INV_CAL_VBAT_MV));
+            int32_t ipk_ma = inverter_ipeak() * INV_CAL_I;   /* peak phase current, mA */
             int n = snprintf(line, sizeof line,
-                             "Vbat=%ld.%02ldV  Vout~%ldV  amp=%ld  T=%dC  fault=%u\r\n",
+                             "Vbat=%ld.%02ldV  Vout~%ldV  amp=%ld  Ipk=%ld.%02ldA  T=%dC  fault=%u\r\n",
                              vbat / 1000, (vbat % 1000) / 10, (long)vout, (long)amp,
+                             ipk_ma / 1000, (ipk_ma % 1000) / 10,
                              bsp_temp_c(), inverter_fault());
             HAL_UART_Transmit(&huart1, (uint8_t *)line, n, 50);
 
