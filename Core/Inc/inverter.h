@@ -34,6 +34,11 @@
 #define INV_CAL_I         38        /* mA per phase-current ADC count (CAL_I)     */
 #define INV_OC_TRIP_A     10        /* overcurrent / short-circuit trip, amps     */
 #define INV_OC_TRIP_CNT   ((INV_OC_TRIP_A * 1000) / INV_CAL_I)
+/* Thermal fold-back. Disabled by default: the M365 temperature reading is
+ * board-specific and the (counts*41)>>8 scaling is uncalibrated, so a stray/
+ * unconnected sensor reads as a bogus high temperature and would wrongly hold
+ * the output off. Calibrate the scaling for your board, then set INV_TEMP_ENABLE 1. */
+#define INV_TEMP_ENABLE   0
 #define INV_TEMP_LIMIT_C  80        /* thermal fold-back: stop above this degC    */
 #define INV_TEMP_CLEAR_C  70        /* ... resume below this (hysteresis)         */
 

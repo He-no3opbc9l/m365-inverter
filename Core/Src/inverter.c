@@ -67,8 +67,12 @@ void inverter_fast(int16_t iph1, int16_t iph2)
 void inverter_slow(int32_t vbat_mV, int16_t temp_c)
 {
     /* thermal fold-back with hysteresis (auto-recovers, not latched) */
+#if INV_TEMP_ENABLE
     if (temp_c > INV_TEMP_LIMIT_C)      thermal_hold = 1;
     else if (temp_c < INV_TEMP_CLEAR_C) thermal_hold = 0;
+#else
+    (void)temp_c;
+#endif
 
     if (fault) return;                             /* OC latched: stay off */
     if (vbat_mV < 1000) { amp_target = 0; return; } /* implausible reading  */
