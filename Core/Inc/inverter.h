@@ -18,11 +18,11 @@
 #define INV_PWM_HZ        15779u    /* control-ISR rate = 64MHz/(2*_T)           */
 #define INV_OUT_HZ        50u       /* target output frequency                    */
 #define INV_PHASE_STEP    ((uint32_t)(((uint64_t)INV_OUT_HZ << 32) / INV_PWM_HZ))
-#define INV_RAMP_MASK     0x7Fu     /* amplitude slews +/-1 every 128 ISR ticks:
-                                     * ~2.8 s to full amplitude. A slow voltage ramp
-                                     * lets the transformer flux build gradually and
-                                     * avoids the magnetizing inrush surge that trips
-                                     * the supply / over-current at start-up. */
+#define INV_RAMP_MASK     0x7Fu     /* initial soft-start: +1 every 128 ISR ticks (~2.8s)
+                                     * so transformer flux builds gradually at power-on. */
+#define INV_RECOVER_MASK  0x0Fu     /* AFTER soft-start: +1 every 16 ticks (~0.35s) so the
+                                     * output recovers quickly once a load-induced fold-back
+                                     * clears (otherwise a transient collapses it for seconds). */
 
 /* ---- Output amplitude ----
  * INV_REGULATE 0 : fixed open-loop amplitude INV_AMP_SET (robust, predictable).
@@ -42,17 +42,20 @@
 
 /* ---- Protection ---- */
 #define INV_CAL_I         38        /* mA per phase-current ADC count (CAL_I)     */
-#define INV_OC_TRIP_A     15        /* overcurrent / short-circuit trip, amps     */
+/* Hard short-circuit latch: debounced + blanked at start-up. There is no soft
+ * current-limit fold-back (it collapsed the output into normal loads); the bench
+ * supply's own current limit handles overload, this only trips on a real short. */
+#define INV_OC_TRIP_A     25        /* short-circuit latch, amps (phase)          */
 #define INV_OC_TRIP_CNT   ((INV_OC_TRIP_A * 1000) / INV_CAL_I)
-#define INV_OC_DEBOUNCE   4         /* consecutive over-threshold samples to latch (reject noise/inrush spikes) */
-#define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles, skips transformer magnetizing inrush */
+#define INV_OC_DEBOUNCE   4         /* consecutive over-trip samples to latch     */
+#define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles     */
 /* Thermal fold-back. Disabled by default: the M365 temperature reading is
  * board-specific and the (counts*41)>>8 scaling is uncalibrated, so a stray/
  * unconnected sensor reads as a bogus high temperature and would wrongly hold
  * the output off. Calibrate the scaling for your board, then set INV_TEMP_ENABLE 1. */
-#define INV_TEMP_ENABLE   0
-#define INV_TEMP_LIMIT_C  80        /* thermal fold-back: stop above this degC    */
-#define INV_TEMP_CLEAR_C  70        /* ... resume below this (hysteresis)         */
+#define INV_TEMP_ENABLE   1
+#define INV_TEMP_LIMIT_C  60        /* thermal fold-back: stop above this degC    */
+#define INV_TEMP_CLEAR_C  50        /* ... resume below this (hysteresis)         */
 
 /* ---- Fault codes (inverter_fault) ---- */
 #define INV_FAULT_NONE    0

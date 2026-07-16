@@ -39,12 +39,7 @@ void UserSysTickHandler(void)
         inverter_slow(bsp_vbat_mv(), bsp_temp_c());
 }
 
-/* ---- fast control loop: fires on every TIM1_CC4 injected ADC conversion ---- */
-void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-    if (hadc->Instance == ADC1)                    /* master of the dual pair */
-        inverter_fast(bsp_iphase_a(), bsp_iphase_b());
-}
+/* fast control loop runs from ADC1_2_IRQHandler (stm32f1xx_it.c) */
 
 int main(void)
 {
@@ -66,11 +61,12 @@ int main(void)
             int32_t vout = (int32_t)(((int64_t)INV_CAL_VOUT * amp * vbat)
                                      / ((int64_t)INV_CAL_AMP * INV_CAL_VBAT_MV));
             int32_t ipk_ma = inverter_ipeak() * INV_CAL_I;   /* peak phase current, mA */
+            int32_t traw   = hadc1.Instance->JDR3 & 0xFFFF;  /* raw temp ADC counts (for calibration) */
             int n = snprintf(line, sizeof line,
-                             "Vbat=%ld.%02ldV  Vout~%ldV  amp=%ld  Ipk=%ld.%02ldA  T=%dC  fault=%u\r\n",
+                             "Vbat=%ld.%02ldV  Vout~%ldV  amp=%ld  Ipk=%ld.%02ldA  Traw=%ld  T=%dC  fault=%u\r\n",
                              vbat / 1000, (vbat % 1000) / 10, (long)vout, (long)amp,
                              ipk_ma / 1000, (ipk_ma % 1000) / 10,
-                             bsp_temp_c(), inverter_fault());
+                             (long)traw, bsp_temp_c(), inverter_fault());
             HAL_UART_Transmit(&huart1, (uint8_t *)line, n, 50);
 
             if (inverter_fault())

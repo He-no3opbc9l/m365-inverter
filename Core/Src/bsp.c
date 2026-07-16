@@ -1,18 +1,12 @@
 #include "bsp.h"
 
-/* Injected-channel select values for ADC->JSQR (1 conversion, JSQ4 = channel) */
-#define JSQR_PHASE_A  (3u << 15)   /* ADC1 injected -> IN3 (PA3) phase-A shunt */
-#define JSQR_PHASE_B  (4u << 15)   /* ADC2 injected -> IN4 (PA4) phase-B shunt */
-
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);   /* defined in stm32f1xx_hal_msp.c */
 
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
-DMA_HandleTypeDef hdma_adc1;
-
-volatile uint16_t bsp_adc[BSP_ADC_N];
+DMA_HandleTypeDef hdma_adc1;   /* declared for the HAL ADC MSP; unused now */
 
 static void err(void) { while (1) { } }
 
@@ -156,47 +150,36 @@ static void adc1_init(void)
 {
     ADC_MultiModeTypeDef mm = {0};
     ADC_InjectionConfTypeDef inj = {0};
-    ADC_ChannelConfTypeDef ch = {0};
 
     hadc1.Instance = ADC1;
     hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
     hadc1.Init.ContinuousConvMode = DISABLE;
     hadc1.Init.DiscontinuousConvMode = DISABLE;
-    hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;  /* regular scan paced by TIM3 */
+    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;   /* regular group unused */
     hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc1.Init.NbrOfConversion = BSP_ADC_N;
+    hadc1.Init.NbrOfConversion = 1;
     hadc1.Init.NbrOfDiscConversion = 0;
     if (HAL_ADC_Init(&hadc1) != HAL_OK) err();
 
-    mm.Mode = ADC_DUALMODE_REGSIMULT_INJECSIMULT;  /* ADC1+ADC2 injected fire together */
+    mm.Mode = ADC_DUALMODE_INJECSIMULT;            /* ADC1+ADC2 injected fire together */
     if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &mm) != HAL_OK) err();
 
-    inj.InjectedChannel = ADC_CHANNEL_3;           /* phase-A shunt */
-    inj.InjectedRank = ADC_INJECTED_RANK_1;
-    inj.InjectedNbrOfConversion = 1;
+    /* Injected group, triggered by TIM1_CC4: rank1 phase-A current, rank2 Vbat,
+     * rank3 temperature. Vbat/temp ride the reliable hardware-triggered injected
+     * path (the regular DMA scan is corrupted by the fast injected sampling). */
+    inj.InjectedNbrOfConversion = 3;
     inj.InjectedSamplingTime = ADC_SAMPLETIME_1CYCLE_5;
     inj.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_CC4;
     inj.AutoInjectedConv = DISABLE;
     inj.InjectedDiscontinuousConvMode = DISABLE;
     inj.InjectedOffset = 0;
     HAL_ADC_Stop(&hadc1);
+    inj.InjectedChannel = ADC_CHANNEL_3; inj.InjectedRank = ADC_INJECTED_RANK_1;  /* phase A */
     if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &inj) != HAL_OK) err();
-
-    /* regular scan order -> bsp_adc[]: Vbat, IN7, temp, phaseA, phaseB, phaseC */
-    const uint32_t chan[BSP_ADC_N] = {
-        ADC_CHANNEL_2, ADC_CHANNEL_7, ADC_CHANNEL_0,
-        ADC_CHANNEL_3, ADC_CHANNEL_4, ADC_CHANNEL_5
-    };
-    const uint32_t rank[BSP_ADC_N] = {
-        ADC_REGULAR_RANK_1, ADC_REGULAR_RANK_2, ADC_REGULAR_RANK_3,
-        ADC_REGULAR_RANK_4, ADC_REGULAR_RANK_5, ADC_REGULAR_RANK_6
-    };
-    for (int i = 0; i < BSP_ADC_N; i++) {
-        ch.Channel = chan[i];
-        ch.Rank = rank[i];
-        ch.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
-        if (HAL_ADC_ConfigChannel(&hadc1, &ch) != HAL_OK) err();
-    }
+    inj.InjectedChannel = ADC_CHANNEL_2; inj.InjectedRank = ADC_INJECTED_RANK_2;  /* Vbat    */
+    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &inj) != HAL_OK) err();
+    inj.InjectedChannel = ADC_CHANNEL_0; inj.InjectedRank = ADC_INJECTED_RANK_3;  /* temp    */
+    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &inj) != HAL_OK) err();
 }
 
 static void adc2_init(void)
@@ -234,14 +217,13 @@ void bsp_init(void)
     adc2_init();
     if (HAL_ADCEx_Calibration_Start(&hadc2) != HAL_OK) err();
 
-    /* arm injected conversions off the TIM1_CC4 hardware trigger, but leave the
-     * JEOC interrupt DISABLED for now so the control loop does not run (and does
-     * not force the output on) while we measure the zero-current shunt offsets. */
+    /* enable both ADCs and arm the injected group off the TIM1_CC4 hardware
+     * trigger. JEOC interrupt stays DISABLED for now so the control loop does not
+     * run (and does not force the output on) while we measure the shunt offsets. */
+    HAL_ADCEx_InjectedStart(&hadc2);
+    HAL_ADCEx_InjectedStart(&hadc1);
     SET_BIT(ADC1->CR2, ADC_CR2_JEXTTRIG);
     SET_BIT(ADC2->CR2, ADC_CR2_JEXTTRIG);
-
-    HAL_ADCEx_MultiModeStart_DMA(&hadc1, (uint32_t *)bsp_adc, BSP_ADC_N);
-    HAL_ADC_Start_IT(&hadc2);
 
     tim1_init();
     tim3_init();
@@ -256,7 +238,7 @@ void bsp_init(void)
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
     TIM1->CCR4 = BSP_ADC_TRIGGER;                  /* fixed injected-ADC sample point */
 
-    if (HAL_TIM_Base_Start(&htim3) != HAL_OK) err();   /* start pacing the regular scan */
+    if (HAL_TIM_Base_Start(&htim3) != HAL_OK) err();
 
     /* park at 50% and keep the output disabled while we measure the shunt offsets */
     CLEAR_BIT(TIM1->BDTR, TIM_BDTR_MOE);
@@ -264,21 +246,21 @@ void bsp_init(void)
     TIM1->CCR2 = BSP_TIM_PERIOD / 2;
     TIM1->CCR3 = BSP_TIM_PERIOD / 2;
 
-    HAL_Delay(500);
+    HAL_Delay(500);   /* let the injected conversions run (JDR updating off CC4) */
 
+    /* average the zero-current phase readings (injected JDR1 of each ADC) */
     uint32_t off_a = 0, off_b = 0;
     for (int i = 0; i < 16; i++) {
         HAL_Delay(5);
-        off_a += bsp_adc[BSP_ADC_PHA];
-        off_b += bsp_adc[BSP_ADC_PHB];
+        off_a += (hadc1.Instance->JDR1 & 0xFFFF);   /* phase A, JOFR1 still 0 -> raw */
+        off_b += (hadc2.Instance->JDR1 & 0xFFFF);   /* phase B */
     }
     off_a >>= 4;
     off_b >>= 4;
 
-    /* load the zero-current offsets so the injected data registers read signed */
-    ADC1->JSQR = JSQR_PHASE_A;
+    /* load the offsets so JDR1 of each ADC reads a signed, zero-centred current.
+     * (JOFR2/JOFR3 stay 0 -> Vbat/temp on ADC1 read as raw counts.) */
     ADC1->JOFR1 = off_a;
-    ADC2->JSQR = JSQR_PHASE_B;
     ADC2->JOFR1 = off_b;
 }
 
@@ -286,6 +268,8 @@ void bsp_init(void)
  * Call this AFTER inverter_init(), once it is safe for the output to drive. */
 void bsp_start_control(void)
 {
-    __HAL_ADC_ENABLE_IT(&hadc1, ADC_IT_JEOC);
-    __HAL_ADC_ENABLE_IT(&hadc2, ADC_IT_JEOC);
+    /* enable the ADC1 injected end-of-conversion interrupt directly; the bare
+     * ADC1_2_IRQHandler (stm32f1xx_it.c) reads the currents and runs the loop. */
+    CLEAR_BIT(ADC1->SR, ADC_SR_JEOC);
+    SET_BIT(ADC1->CR1, ADC_CR1_JEOCIE);
 }
