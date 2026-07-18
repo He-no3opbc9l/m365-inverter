@@ -109,8 +109,47 @@ openocd -f interface/stlink.cfg -c "transport select hla_swd" -f target/stm32f1x
   -c "init; reset halt; flash write_image erase build/firmware.bin 0x08000000; reset run; exit"
 ```
 
-To restore the scooter, flash a stock M365 DRV image (from scooterhacking.org) at
-`0x08000000` the same way.
+To put the scooter back to stock, see [Restoring stock firmware](#restoring-stock-firmware)
+below — **do not** just write the stock image to `0x08000000`, it is linked for
+`0x08001000`.
+
+## Restoring stock firmware
+
+Removing RDP mass-erases the chip, which also destroys the factory **bootloader**
+in the first 4 KB. A stock DRV image alone is therefore not enough — the ESC needs
+three pieces, at three different addresses:
+
+| Address | Content | Size |
+|---|---|---|
+| `0x08000000` | bootloader (`boot.bin`) — handles OTA updates | ~3 KB |
+| `0x08001000` | DRV application (`DRV140.bin` / `FIRM.bin`) | ~26 KB |
+| `0x0800f800` | data block: serial, odometer, **chip UUID** | 512 B |
+
+`boot.bin` and the `data.bin` template come from
+**[CamiAlfa/M365_DRV_STLINK](https://github.com/CamiAlfa/M365_DRV_STLINK)** (ESC
+recovery via ST-Link); its `DRV140.bin` is byte-identical to the DRV140 `FIRM.bin`
+published on scooterhacking.org.
+
+> ⚠️ The DRV application is linked for **`0x08001000`**. Writing it to `0x08000000`
+> boots into a HardFault (its reset vector then points at the wrong code).
+
+The data block is tied to the MCU: write your chip's UUID (read 3 words from
+`0x1FFFF7E8`) into the block at offsets `0x1b4/0x1b8/0x1bc`, the serial at `0x20`
+and odometer (km × 1000) at `0x52`. `flash_m365_classic.py` in that repo does this
+for you; the equivalent manual flash is:
+
+```sh
+openocd -f interface/stlink.cfg -c "transport select hla_swd" -f target/stm32f1x.cfg \
+  -c "init" -c "reset halt" \
+  -c "flash write_image erase boot.bin      0x08000000" \
+  -c "flash write_image erase DRV140.bin    0x08001000" \
+  -c "flash write_image erase data.bin      0x0800f800" \
+  -c "reset run" -c "exit"
+```
+
+After flashing, **power-cycle the board for real** — a debugger `reset run` does not
+reliably hand control from the bootloader to the application, and it can look like
+the ESC is hung in the bootloader when it is fine.
 
 ## Telemetry
 
