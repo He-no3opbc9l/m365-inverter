@@ -50,11 +50,21 @@ step-up transformer.
 
 ## Protection
 
-| Protection | Type | Behaviour |
+"Electronic breaker" model: the output holds **full voltage** — overload is caught
+by tripping, not by throttling (a drooping output makes constant-power/SMPS loads
+draw *more* current and collapse).
+
+| Protection | Acts on | Behaviour |
 |---|---|---|
-| Over-current / short | fast, per-PWM-cycle | **latched** — output off, LED solid, until power-cycle |
+| Short circuit | instantaneous peak, per-PWM-cycle (debounced) | **latched** — output off, LED solid, until power-cycle |
+| Overload | **averaged** current (~4 ms low-pass), inverse-time integral | **latched** — trips sooner the bigger the overload |
 | Over-temperature | 10 ms loop | **fold-back** — ramps output to 0, auto-recovers on cooldown |
-| Soft-start | always | amplitude slews up gradually on power-up |
+| Soft-start | always | amplitude ramps up gradually (~5 s) on power-up |
+
+Averaging matters: capacitive/SMPS/triac loads draw brief high peaks. Limiting on
+the *peak* throttled them; the average lets real power through and only sustained
+overload trips. Approx overload trip times at the default settings: ~1.2 s @25 A,
+~0.35 s @30 A, ~0.15 s @40 A (phase current).
 
 Thresholds live in [`Core/Inc/inverter.h`](Core/Inc/inverter.h).
 
@@ -63,14 +73,17 @@ Thresholds live in [`Core/Inc/inverter.h`](Core/Inc/inverter.h).
 | Define | Meaning |
 |---|---|
 | `INV_OUT_HZ` | output frequency (50) |
-| `INV_VOUT_TARGET` | regulated secondary RMS, volts |
-| `INV_CAL_AMP / INV_CAL_VOUT / INV_CAL_VBAT_MV` | one measured calibration point |
-| `INV_AMP_MAX` | hard amplitude ceiling (safety) |
-| `INV_OC_TRIP_A` | over-current trip (phase amps) |
-| `INV_TEMP_LIMIT_C / INV_TEMP_CLEAR_C` | thermal fold-back thresholds |
+| `INV_AMP_SET` | **fixed open-loop amplitude** — tune for your output voltage |
+| `INV_REGULATE` | 0 = open loop (default); 1 = feed-forward regulation from Vbat |
+| `INV_RAMP_DIV` | soft-start ramp rate (~5 s to full) |
+| `INV_ILIM_A` | average current considered overload (phase amps) |
+| `INV_OL_TRIP` | inverse-time integral threshold — lower = trips sooner |
+| `INV_OC_TRIP_A` | instantaneous short-circuit latch (phase amps) |
+| `INV_TEMP_ENABLE`, `INV_TEMP_LIMIT_C / INV_TEMP_CLEAR_C` | thermal fold-back |
 
-**Calibrate** by measuring the secondary RMS at a known amplitude and supply,
-then set `INV_CAL_*` to those numbers. Output is linear in amplitude.
+**Calibrate the output** by raising `INV_AMP_SET` until the secondary reads the
+wanted RMS — output is linear in amplitude. Reference: ~350 gave ~225 V at ~30 V
+supply on the test transformer.
 
 ## Build
 
@@ -111,9 +124,31 @@ The status **LED (PD1)** heartbeats normally and goes solid on a latched fault.
 
 ## Status
 
-⚠️ The current-sensing path was rewritten for the inverter use-case (fixed
-phase-A/B shunt read, no rotor/hall logic). **Validate on the bench** (scope the
-output, confirm the over-current trip) before trusting it with a real load.
+Working on hardware: clean 50 Hz sine, ~225 V from a ~30 V supply, and it drives
+real loads (SMPS phone charger / TV) without false trips.
+
+## TODO / known limitations
+
+- **Output voltage regulation.** Currently open loop (fixed amplitude), so the
+  output moves with the supply voltage and sags under load. Vbat is now read
+  reliably, so feed-forward (`INV_REGULATE 1`) can be re-enabled — but true load
+  regulation needs secondary-side voltage sensing, which the board does not have.
+- **⚠️ Protection is NOT validated against device damage.** The overload and
+  short-circuit thresholds/timings have not been proven to trip *before* the
+  MOSFETs are damaged. Treat the current settings as provisional.
+- **Short-circuit behaviour depends on the supply.** With a current-limited bench
+  PSU the PSU folds back before the firmware's instantaneous latch is reached, so
+  the PSU is what actually protects. Validate the firmware thresholds on a supply
+  that can deliver fault current.
+- **Hot-plugging capacitive loads** still causes a large inrush spike (measured
+  ~65 A). Connect the load *before* powering the inverter so the soft-start charges
+  it gently, or add hardware inrush limiting (NTC/resistor).
+- **Temperature calibration is rough** — two close bench points (~30 °C→1790,
+  ~40 °C→1590 counts) extrapolated linearly. Re-calibrate at a real hot point.
+- No output filtering beyond the external LC; a series inductor + film cap on the
+  transformer are required (see wiring) or the switching carrier dominates.
+- Debugging note: an ST-Link `halt` freezes the sine and puts DC on the
+  transformer — read telemetry over UART instead while the output is live.
 
 ## Credits & license
 

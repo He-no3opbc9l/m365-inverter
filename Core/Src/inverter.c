@@ -12,6 +12,8 @@ static uint16_t         oc_cnt;        /* consecutive over-current samples      
 static uint32_t         oc_blank;      /* startup over-current blanking countdown    */
 static volatile int32_t ipeak;         /* peak |phase current| (telemetry)           */
 static uint8_t          started;       /* set once soft-start reaches target         */
+static int32_t          iavg;          /* low-pass |phase current| for the limit     */
+static int32_t          overload_acc;  /* inverse-time overload integrator           */
 volatile int32_t        oc_trip_i;     /* current (counts) that latched the OC (diag) */
 
 void inverter_init(void)
@@ -26,6 +28,8 @@ void inverter_init(void)
     oc_blank = INV_OC_BLANK;
     ipeak = 0;
     started = 0;
+    iavg = 0;
+    overload_acc = 0;
     SET_BIT(TIM1->BDTR, TIM_BDTR_MOE);   /* enable the output stage */
 }
 
@@ -45,11 +49,11 @@ void inverter_fast(int16_t iph1, int16_t iph2)
      * only shows on one channel (ADC glitch at the sample instant). */
     int32_t icur = (ia < ib) ? ia : ib;
     if (icur > ipeak) ipeak = icur;                /* peak-hold for telemetry */
+    iavg += (icur - iavg) >> INV_IAVG_SHIFT;        /* low-pass for the soft limit */
     if (oc_blank) oc_blank--;
 
-    /* hard short-circuit latch (debounced, blanked at startup). No soft current-
-     * limit fold-back: it collapsed the output into loads; the bench supply's own
-     * current limit handles overload, this only catches a genuine short. */
+    /* hard short-circuit latch on the INSTANTANEOUS peak (debounced, blanked at
+     * startup) - only a genuine short; brief load peaks are allowed through. */
     if (!oc_blank && icur > INV_OC_TRIP_CNT) {
         if (++oc_cnt >= INV_OC_DEBOUNCE) {
             fault = INV_FAULT_OC;
@@ -57,6 +61,18 @@ void inverter_fast(int16_t iph1, int16_t iph2)
         }
     } else {
         oc_cnt = 0;
+    }
+
+    /* inverse-time overload latch (breaker model): integrate the average overshoot
+     * over ILIM - brief peaks decay away, a sustained overload trips (sooner the
+     * larger it is). The output is NOT throttled, only tripped. */
+    if (!oc_blank) {
+        overload_acc += (iavg - INV_ILIM_CNT);
+        if (overload_acc < 0) overload_acc = 0;
+        if (overload_acc > INV_OL_TRIP) {
+            fault = INV_FAULT_OL;
+            oc_trip_i = iavg;
+        }
     }
 
     if (fault) {                                   /* latched: kill the output */
@@ -78,14 +94,6 @@ void inverter_fast(int16_t iph1, int16_t iph2)
         else if (amp > tgt) amp--;
     }
     if (tgt > 0 && amp >= tgt) started = 1;
-
-    /* proportional current limit: pull amplitude down in proportion to how far the
-     * current is over ILIM. It settles at the limit (holding voltage) instead of
-     * collapsing to zero, and the slew above brings it back when the load eases. */
-    if (!oc_blank && icur > INV_ILIM_CNT) {
-        amp -= ((icur - INV_ILIM_CNT) >> INV_ILIM_SHIFT) + 1;
-        if (amp < 0) amp = 0;
-    }
 
     /* DDS sine. arm_sin_q31 wants input in [0 .. 0x7FFFFFFF] = [0 .. 2*pi);
      * (theta >> 1) keeps it positive across the whole accumulator -> one clean

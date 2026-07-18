@@ -42,21 +42,23 @@
 
 /* ---- Protection ---- */
 #define INV_CAL_I         38        /* mA per phase-current ADC count (CAL_I)     */
-/* Two-level current protection:
- *  - soft current LIMIT (fold-back): hold phase current <= ILIM by pulling the
- *    amplitude down, then recover fast. Lets the output soft-start into capacitive
- *    / SMPS loads (their inrush is limited instead of tripping);
- *  - hard short-circuit LATCH at a much higher level (real short only). */
-#define INV_ILIM_A        20        /* soft current-limit, amps                    */
+/* Protection = "electronic breaker": the output holds full voltage (no droop);
+ * overload is caught by tripping, not by limiting.
+ *  - INVERSE-TIME overload latch on the AVERAGED current (thermal-magnetic breaker
+ *    model): integrate how far the average is over ILIM; trip when the integral
+ *    exceeds INV_OL_TRIP -> bigger overload trips faster, brief peaks decay away.
+ *  - fast hard-latch on the INSTANTANEOUS peak for a genuine short. */
+#define INV_ILIM_A        23        /* average current considered overload, amps   */
 #define INV_ILIM_CNT      ((INV_ILIM_A * 1000) / INV_CAL_I)
-#define INV_ILIM_SHIFT    2         /* proportional gain: amp -= (over >> SHIFT)+1.
-                                     * Reduces amplitude in proportion to the overshoot
-                                     * so it SETTLES at the current limit instead of
-                                     * collapsing to zero -> holds voltage, recovers. */
-#define INV_OC_TRIP_A     40        /* hard short-circuit latch, amps             */
+#define INV_IAVG_SHIFT    6         /* current low-pass: TC ~ 2^6 ISR cycles (~4ms) */
+#define INV_OL_TRIP       1000000   /* inverse-time integral threshold. Approx trip
+                                     * times: ~1.2s @25A, ~0.35s @30A, ~0.15s @40A. */
+#define INV_OC_TRIP_A     75        /* hard short-circuit latch, amps (peak); high so
+                                     * brief capacitive/triac inrush peaks pass and
+                                     * only a real short (ADC saturates ~78A) latches */
 #define INV_OC_TRIP_CNT   ((INV_OC_TRIP_A * 1000) / INV_CAL_I)
-#define INV_OC_DEBOUNCE   4         /* consecutive over-trip samples to latch     */
-#define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles     */
+#define INV_OC_DEBOUNCE   4         /* consecutive over-trip samples to latch      */
+#define INV_OC_BLANK      1600      /* startup blanking: ~100ms of ISR cycles      */
 /* Thermal fold-back. Disabled by default: the M365 temperature reading is
  * board-specific and the (counts*41)>>8 scaling is uncalibrated, so a stray/
  * unconnected sensor reads as a bogus high temperature and would wrongly hold
@@ -67,7 +69,8 @@
 
 /* ---- Fault codes (inverter_fault) ---- */
 #define INV_FAULT_NONE    0
-#define INV_FAULT_OC      1         /* latched over-current; needs power cycle    */
+#define INV_FAULT_OC      1         /* instantaneous short-circuit latch          */
+#define INV_FAULT_OL      2         /* inverse-time overload latch                */
 
 void    inverter_init(void);                            /* once, after peripherals up   */
 void    inverter_fast(int16_t iph1, int16_t iph2);      /* every PWM ISR                */
