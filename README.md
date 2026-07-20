@@ -115,6 +115,16 @@ below — **do not** just write the stock image to `0x08000000`, it is linked fo
 
 ## Restoring stock firmware
 
+**Use [ScooterHacking ReFlasher](recovery/) — see [`recovery/`](recovery/README.md)
+for the full procedure.** It writes a *matched* bootloader + application + data set
+and is the only method verified to leave the scooter fully working, **including OTA
+updates**.
+
+> ⚠️ Hand-flashing the three pieces below (which this project originally documented)
+> produced a scooter that booted and rode fine but whose **OTA updating was broken** —
+> attempting an update froze the ESC until the battery was unplugged. ReFlasher fixed
+> it. The layout below is kept for reference/understanding, not as the recommended path.
+
 Removing RDP mass-erases the chip, which also destroys the factory **bootloader**
 in the first 4 KB. A stock DRV image alone is therefore not enough — the ESC needs
 three pieces, at three different addresses:
@@ -150,6 +160,9 @@ openocd -f interface/stlink.cfg -c "transport select hla_swd" -f target/stm32f1x
 After flashing, **power-cycle the board for real** — a debugger `reset run` does not
 reliably hand control from the bootloader to the application, and it can look like
 the ESC is hung in the bootloader when it is fine.
+
+Note that stock firmware **re-enables read protection (RDP) by itself**, so flashing
+this project's firmware again afterwards requires another unlock + mass-erase.
 
 ## Telemetry
 

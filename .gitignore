@@ -6,3 +6,6 @@ build/
 *.elf
 *.hex
 *.bin
+recovery/*.exe
+recovery/*.zip
+recovery/*.msi
